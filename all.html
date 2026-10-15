@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>矢量方向繪圖儀 - 完整整合版</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #ffffff; color: #000000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #app { display: flex; flex-direction: column; width: 100%; height: 100%; position: relative; }
+        #canvas-container { flex: 1; position: relative; overflow: hidden; background-color: #ffffff; touch-action: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* 右下角圓形控制盤 */
+        .bottom-right-control {
+            position: absolute; right: 30px; bottom: 80px; width: 135px; height: 135px;
+            background-color: rgba(255, 255, 255, 0.8); border: 2px solid #000000; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+            backdrop-filter: blur(4px); z-index: 25;
+        }
+        .dpad-center-input { position: absolute; width: 55px; height: 35px; background: transparent; border: none; color: #000000; font-size: 15px; font-weight: bold; text-align: center; outline: none; z-index: 5; }
+        .dpad-arrow { position: absolute; background: transparent; border: none; font-size: 16px; font-weight: bold; color: #000000; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+        .dpad-arrow:active { background: rgba(0,0,0,0.1); border-radius: 50%; }
+        .arrow-up { top: 6px; left: 51.5px; }
+        .arrow-down { bottom: 6px; left: 51.5px; }
+        .arrow-left { left: 6px; top: 51.5px; }
+        .arrow-right { right: 6px; top: 51.5px; }
+
+        .control-panel { background-color: #ffffff; border-top: 1px solid #e2e8f0; padding: 8px 15px; display: flex; justify-content: center; z-index: 10; }
+        .status-bar { font-size: 11px; color: #64748b; display: flex; gap: 15px; }
+        .status-item span { color: #000000; font-weight: 600; }
+
+        /* 左側半圓形與選單樣式 */
+        .left-menu-container { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 30; display: flex; align-items: center; }
+        .semi-circle-btn {
+            width: 36px; height: 63px; background-color: rgba(255, 255, 255, 0.75);
+            border: 1.5px solid #000000; border-left: none; border-radius: 0 31.5px 31.5px 0;
+            display: flex; align-items: center; justify-content: flex-end; padding-right: 6px;
+            cursor: pointer; font-size: 14px; font-weight: bold; color: #000000;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1); backdrop-filter: blur(4px);
+        }
+        .rotary-menu {
+            position: absolute; left: 42px; top: 50%; transform: translateY(-50%) scale(0);
+            transform-origin: left center; width: 220px; max-height: 320px; overflow-y: auto;
+            background: rgba(0, 0, 0, 0.85); border: 1px solid #ffffff; border-radius: 12px;
+            padding: 10px 12px; display: flex; flex-direction: column; gap: 10px;
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+        }
+        .rotary-menu.open { transform: translateY(-50%) scale(1); }
+        .rotary-item { background: transparent; color: #ffffff; border: none; padding: 4px 0; text-align: left; font-size: 14px; white-space: nowrap; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .rotary-item:active { color: #38bdf8; }
+        .rotary-sub-item { padding-left: 15px; font-size: 13px; color: #cbd5e1; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div id="canvas-container">
+            <canvas id="drawCanvas"></canvas>
+        </div>
+
+        <!-- 右下角：方向控制盤 -->
+        <div class="bottom-right-control">
+            <button class="dpad-arrow arrow-up" onclick="CoreApp.drawLine('UP')">^</button>
+            <button class="dpad-arrow arrow-left" onclick="CoreApp.drawLine('LEFT')">&lt;</button>
+            <input type="number" class="dpad-center-input" id="lengthInput" value="100" inputmode="decimal">
+            <button class="dpad-arrow arrow-right" onclick="CoreApp.drawLine('RIGHT')">&gt;</button>
+            <button class="dpad-arrow arrow-down" onclick="CoreApp.drawLine('DOWN')">v</button>
+        </div>
+
+        <div class="control-panel">
+            <div class="status-bar">
+                <div class="status-item">專案: <span id="currentProjectLabel">未命名專案</span></div>
+                <div class="status-item">起點 X: <span id="posX">0</span></div>
+                <div class="status-item">Y: <span id="posY">0</span></div>
+                <div class="status-item">總長度: <span id="totalLen">0</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 內嵌所有核心與模組邏輯，解決手機檔案讀取限制 -->
+    <script>
+    window.CoreApp = (function() {
+        const canvas = document.getElementById('drawCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+
+        let width = 0, height = 0;
+        let scale = 1.5;
+        let offsetX = 0, offsetY = 0;
+        
+        let activeTouches = new Map();
+        let initialPinchDist = null;
+        let initialScale = scale;
+
+        let currentX = 0, currentY = 0;
+        let lines = []; 
+        let currentProjectName = "未命名專案";
+        let registeredModules = {};
+
+        function initCanvas() {
+            width = container.clientWidth;
+            height = container.clientHeight;
+            canvas.width = width * window.devicePixelRatio;
+            canvas.height = height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+            offsetX = width / 2;
+            offsetY = height / 2;
+            redraw();
+        }
+
+        window.addEventListener('resize', initCanvas);
+        
+        container.addEventListener('pointerdown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+            activeTouches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+            if (activeTouches.size === 2) {
+                const touches = Array.from(activeTouches.values());
+                initialPinchDist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+                initialScale = scale;
+            } else if (activeTouches.size === 1) {
+                startX = e.clientX - offsetX;
+                startY = e.clientY - offsetY;
+            }
+        });
+
+        container.addEventListener('pointermove', (e) => {
+            if (!activeTouches.has(e.pointerId)) return;
+            activeTouches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+            if (activeTouches.size === 2 && initialPinchDist !== null) {
+                const touches = Array.from(activeTouches.values());
+                const currentDist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+                const zoomFactor = currentDist / initialPinchDist;
+                scale = Math.max(0.2, Math.min(10, initialScale * zoomFactor));
+                redraw();
+            } else if (activeTouches.size === 1) {
+                offsetX = e.clientX - startX;
+                offsetY = e.clientY - startY;
+                redraw();
+            }
+        });
+
+        const handlePointerEnd = (e) => {
+            if (!activeTouches.has(e.pointerId)) return;
+            
+            if (activeTouches.size === 1) {
+                const remainingTouch = Array.from(activeTouches.values())[0];
+                if (remainingTouch && e.pointerId !== Array.from(activeTouches.keys())[0]) {
+                    startX = remainingTouch.clientX - offsetX;
+                    startY = remainingTouch.clientY - offsetY;
+                }
+            }
+
+            activeTouches.delete(e.pointerId);
+            if (activeTouches.size < 2) {
+                initialPinchDist = null;
+            }
+
+            if (activeTouches.size === 0 && e.pressure === 0) {
+                const rect = canvas.getBoundingClientRect();
+                const worldX = (e.clientX - rect.left - offsetX) / scale;
+                const worldY = (e.clientY - rect.top - offsetY) / scale;
+                
+                let isSelecting = false;
+                if (window.ModuleSelect && typeof window.ModuleSelect.getSelectMode === 'function') {
+                    if (window.ModuleSelect.getSelectMode() !== 'none') {
+                        isSelecting = true;
+                    }
+                }
+
+                for (let name in registeredModules) {
+                    if (typeof registeredModules[name].onCanvasClick === 'function') {
+                        registeredModules[name].onCanvasClick(worldX, worldY, scale);
+                    }
+                }
+
+                if (!isSelecting) {
+                    checkAndInteract(worldX, worldY);
+                }
+            }
+        };
+
+        container.addEventListener('pointerup', handlePointerEnd);
+        container.addEventListener('pointercancel', handlePointerEnd);
+
+        container.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomFactor = 1.1;
+            scale = e.deltaY < 0 ? scale * zoomFactor : scale / zoomFactor;
+            redraw();
+        }, { passive: false });
+
+        function redraw() {
+            ctx.clearRect(0, 0, width, height);
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            lines.forEach((l) => {
+                ctx.beginPath();
+                ctx.moveTo(l.x1, l.y1);
+                ctx.lineTo(l.x2, l.y2);
+                ctx.strokeStyle = l.color || '#000000';
+                ctx.lineWidth = 2.5 / scale;
+                ctx.stroke();
+
+                ctx.save();
+                ctx.fillStyle = '#000000';
+                ctx.font = `bold 13px sans-serif`;
+                const midX = (l.x1 + l.x2) / 2;
+                const midY = (l.y1 + l.y2) / 2;
+                ctx.translate(midX, midY);
+                ctx.scale(1 / scale, 1 / scale);
+                ctx.fillText(l.length, 5, -5);
+                ctx.restore();
+            });
+
+            for (let name in registeredModules) {
+                if (typeof registeredModules[name].onDraw === 'function') {
+                    registeredModules[name].onDraw(ctx, scale);
+                }
+            }
+
+            let isSelecting = false;
+            if (window.ModuleSelect && typeof window.ModuleSelect.getSelectMode === 'function') {
+                if (window.ModuleSelect.getSelectMode() !== 'none') {
+                    isSelecting = true;
+                }
+            }
+
+            if (!isSelecting) {
+                ctx.beginPath();
+                ctx.arc(currentX, currentY, Math.max(3.5, 5 / scale), 0, Math.PI * 2);
+                ctx.fillStyle = '#000000';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1.5 / scale;
+                ctx.stroke();
+            }
+
+            ctx.restore();
+
+            if (window.ModuleMenu && typeof ModuleMenu.updateUI === 'function') {
+                ModuleMenu.updateUI();
+            }
+        }
+
+        function updateStatus() {
+            document.getElementById('posX').innerText = Math.round(currentX);
+            document.getElementById('posY').innerText = Math.round(currentY);
+            const total = lines.reduce((sum, l) => sum + l.length, 0);
+            document.getElementById('totalLen').innerText = total;
+            document.getElementById('currentProjectLabel').innerText = currentProjectName;
+        }
+
+        function checkAndInteract(worldX, worldY) {
+            for (let i = 0; i < lines.length; i++) {
+                const l = lines[i];
+                const distToLine = pointToSegmentDistance(worldX, worldY, l.x1, l.y1, l.x2, l.y2);
+                const midX = (l.x1 + l.x2) / 2 + 15 / scale;
+                const midY = (l.y1 + l.y2) / 2 - 15 / scale;
+                const distToLabel = Math.hypot(worldX - midX, worldY - midY);
+
+                if (distToLine < 12 / scale || distToLabel < 30 / scale) {
+                    const newLenStr = prompt(`修改第 ${i + 1} 段線條長度：`, l.length);
+                    if (newLenStr !== null) {
+                        const newLen = parseFloat(newLenStr);
+                        if (!isNaN(newLen) && newLen > 0) updateLineLength(i, newLen);
+                    }
+                    break;
+                }
+            }
+        }
+
+        function pointToSegmentDistance(x, y, x1, y1, x2, y2) {
+            const A = x - x1, B = y - y1, C = x2 - x1, D = y2 - y1;
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = lenSq !== 0 ? dot / lenSq : -1;
+            let xx = param < 0 ? x1 : param > 1 ? x2 : x1 + param * C;
+            let yy = param < 0 ? y1 : param > 1 ? y2 : y1 + param * D;
+            return Math.hypot(x - xx, y - yy);
+        }
+
+        function updateLineLength(index, newLen) {
+            const l = lines[index];
+            const oldX2 = l.x2;
+            const oldY2 = l.y2;
+
+            l.length = newLen;
+            switch(l.direction) {
+                case 'UP': l.x2 = l.x1; l.y2 = l.y1 - l.length; break;
+                case 'DOWN': l.x2 = l.x1; l.y2 = l.y1 + l.length; break;
+                case 'LEFT': l.x2 = l.x1 - l.length; l.y2 = l.y1; break;
+                case 'RIGHT': l.x2 = l.x1 + l.length; l.y2 = l.y1; break;
+            }
+
+            const dx = l.x2 - oldX2;
+            const dy = l.y2 - oldY2;
+
+            for (let i = index + 1; i < lines.length; i++) {
+                const nextL = lines[i];
+                nextL.x1 += dx;
+                nextL.y1 += dy;
+                nextL.x2 += dx;
+                nextL.y2 += dy;
+            }
+
+            if (lines.length > 0) {
+                const last = lines[lines.length - 1];
+                currentX = last.x2;
+                currentY = last.y2;
+            }
+
+            updateStatus(); 
+            redraw();
+        }
+
+        return {
+            init: initCanvas,
+            redraw: redraw,
+            registerModule: function(name, mod) { registeredModules[name] = mod; },
+
+            getLines: function() { return lines; },
+            setLines: function(newLines) { lines = newLines; updateStatus(); redraw(); },
+            getCurrentPos: function() { return { x: currentX, y: currentY }; },
+            setCurrentPos: function(x, y) { currentX = x; currentY = y; updateStatus(); redraw(); },
+
+            setSelectMode: function(mode) {
+                if (window.ModuleSelect) ModuleSelect.setSelectMode(mode);
+            },
+            clearSelection: function() {
+                if (window.ModuleSelect) ModuleSelect.clearSelection();
+            },
+            startFromSelectedPoint: function() {
+                const pts = window.ModuleSelect ? window.ModuleSelect.getSelectedPoints() : [];
+                if (pts.length === 1) {
+                    currentX = pts[0].x;
+                    currentY = pts[0].y;
+                    CoreApp.clearSelection();
+                    updateStatus();
+                    redraw();
+                }
+            },
+            deleteSelected: function() {
+                const lineIndices = window.ModuleSelect ? window.ModuleSelect.getSelectedLineIndices() : [];
+                if (lineIndices.length > 0) {
+                    lineIndices.sort((a, b) => b - a);
+                    lineIndices.forEach(idx => lines.splice(idx, 1));
+                    CoreApp.clearSelection();
+                    updateStatus();
+                    redraw();
+                }
+            },
+
+            drawLine: function(direction) {
+                const input = document.getElementById('lengthInput');
+                const len = parseFloat(input ? input.value : 100);
+                if (isNaN(len) || len <= 0) return;
+
+                let nextX = currentX, nextY = currentY;
+                switch(direction) {
+                    case 'UP': nextY -= len; break;
+                    case 'DOWN': nextY += len; break;
+                    case 'LEFT': nextX -= len; break;
+                    case 'RIGHT': nextX += len; break;
+                }
+
+                lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY, length: len, direction: direction });
+                currentX = nextX; currentY = nextY;
+                updateStatus(); redraw();
+            },
+
+            newProject: function() {
+                if (lines.length > 0 && !confirm('確定要開新專案嗎？未儲存的進度將會遺失。')) return;
+                lines = []; currentX = 0; currentY = 0;
+                currentProjectName = "未命名專案";
+                CoreApp.clearSelection();
+                updateStatus(); redraw();
+            },
+
+            saveProjectAs: function() {
+                let allProjects = {};
+                try {
+                    const savedData = localStorage.getItem('vector_cad_projects_db');
+                    if (savedData) allProjects = JSON.parse(savedData);
+                } catch(e) {}
+
+                const defaultName = currentProjectName === "未命名專案" ? "專案01" : currentProjectName;
+                const nameInput = prompt('請輸入專案名稱：', defaultName);
+                if (!nameInput || !nameInput.trim()) return;
+
+                const projectName = nameInput.trim();
+                currentProjectName = projectName;
+
+                allProjects[projectName] = {
+                    lines: lines,
+                    currentX: currentX,
+                    currentY: currentY,
+                    updatedAt: new Date().toLocaleString()
+                };
+
+                localStorage.setItem('vector_cad_projects_db', JSON.stringify(allProjects));
+                updateStatus();
+            },
+
+            loadProjectPrompt: function() {
+                let allProjects = {};
+                try {
+                    const savedData = localStorage.getItem('vector_cad_projects_db');
+                    if (savedData) allProjects = JSON.parse(savedData);
+                } catch(e) {}
+
+                const projectKeys = Object.keys(allProjects);
+                if (projectKeys.length === 0) return;
+
+                let msg = '請選擇要載入的專案編號或名稱：\n\n';
+                projectKeys.forEach((key, index) => {
+                    msg += `${index + 1}. ${key}\n`;
+                });
+
+                const choice = prompt(msg, "1");
+                if (!choice) return;
+
+                let targetKey = "";
+                const choiceNum = parseInt(choice);
+                if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= projectKeys.length) {
+                    targetKey = projectKeys[choiceNum - 1];
+                } else if (allProjects[choice.trim()]) {
+                    targetKey = choice.trim();
+                }
+
+                if (targetKey && allProjects[targetKey]) {
+                    const pData = allProjects[targetKey];
+                    lines = pData.lines || [];
+                    currentX = pData.currentX || 0;
+                    currentY = pData.currentY || 0;
+                    currentProjectName = targetKey;
+                    CoreApp.clearSelection();
+                    updateStatus(); redraw();
+                }
+            },
+
+            undo: () => {
+                if (lines.length === 0) return;
+                const last = lines.pop();
+                currentX = last.x1; currentY = last.y1;
+                updateStatus(); redraw();
+            },
+            clearCanvas: () => {
+                if (lines.length > 0 && !confirm('確定要清空當前畫布的所有圖形嗎？')) return;
+                lines = []; currentX = 0; currentY = 0;
+                CoreApp.clearSelection();
+                updateStatus(); redraw();
+            },
+            exportSVG: () => {
+                if (lines.length === 0) { alert('目前沒有可匯出的線條！'); return; }
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                lines.forEach(l => {
+                    minX = Math.min(minX, l.x1, l.x2); minY = Math.min(minY, l.y1, l.y2);
+                    maxX = Math.max(maxX, l.x1, l.x2); maxY = Math.max(maxY, l.y1, l.y2);
+                });
+                const pad = 40;
+                minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+                let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${maxX-minX} ${maxY-minY}">\n`;
+                svg += `  <rect x="${minX}" y="${minY}" width="${maxX-minX}" height="${maxY-minY}" fill="#ffffff"/>\n`;
+                lines.forEach(l => {
+                    svg += `  <line x1="${l.x1}" y1="${l.y1}" x2="${l.x2}" y2="${l.y2}" stroke="#000000" stroke-width="2.5"/>\n`;
+                    svg += `  <text x="${(l.x1+l.x2)/2+5}" y="${(l.y1+l.y2)/2-5}" fill="#000000" font-weight="bold" font-size="13">${l.length}</text>\n`;
+                });
+                svg += `</svg>`;
+                const blob = new Blob([svg], { type: 'image/svg+xml' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${currentProjectName}.svg`;
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        };
+    })();
+    </script>
+
+    <!-- 功能 4：點線選取 -->
+    <script>
+    (function() {
+        let selectMode = 'none';
+        let selectedPoints = [];
+        let selectedLineIndices = [];
+
+        window.ModuleSelect = {
+            getSelectMode: function() { return selectMode; },
+            setSelectMode: function(mode) {
+                selectMode = (selectMode === mode) ? 'none' : mode;
+                selectedPoints = [];
+                selectedLineIndices = [];
+                if (window.CoreApp && typeof CoreApp.redraw === 'function') CoreApp.redraw();
+            },
+            clearSelection: function() {
+                selectMode = 'none';
+                selectedPoints = [];
+                selectedLineIndices = [];
+                if (window.CoreApp && typeof CoreApp.redraw === 'function') CoreApp.redraw();
+            },
+            getSelectedPoints: function() { return selectedPoints; },
+            getSelectedLineIndices: function() { return selectedLineIndices; },
+
+            onCanvasClick: function(worldX, worldY, scale) {
+                if (selectMode === 'none') return;
+                const lines = CoreApp.getLines();
+                const threshold = 15 / scale;
+
+                if (selectMode === 'point') {
+                    let clickedPoint = null;
+                    lines.forEach(l => {
+                        if (Math.hypot(worldX - l.x1, worldY - l.y1) < threshold) clickedPoint = { x: l.x1, y: l.y1 };
+                        if (Math.hypot(worldX - l.x2, worldY - l.y2) < threshold) clickedPoint = { x: l.x2, y: l.y2 };
+                    });
+                    if (clickedPoint) {
+                        const idx = selectedPoints.findIndex(p => p.x === clickedPoint.x && p.y === clickedPoint.y);
+                        if (idx !== -1) selectedPoints.splice(idx, 1);
+                        else selectedPoints.push(clickedPoint);
+                        CoreApp.redraw();
+                    }
+                } else if (selectMode === 'line') {
+                    let clickedLineIdx = null;
+                    for (let i = 0; i < lines.length; i++) {
+                        const l = lines[i];
+                        const A = worldX - l.x1, B = worldY - l.y1, C = l.x2 - l.x1, D = l.y2 - l.y1;
+                        const dot = A * C + B * D;
+                        const lenSq = C * C + D * D;
+                        let param = lenSq !== 0 ? dot / lenSq : -1;
+                        let xx = param < 0 ? l.x1 : param > 1 ? l.x2 : l.x1 + param * C;
+                        let yy = param < 0 ? l.y1 : param > 1 ? l.y2 : l.y1 + param * D;
+                        if (Math.hypot(worldX - xx, worldY - yy) < 12 / scale) {
+                            clickedLineIdx = i;
+                            break;
+                        }
+                    }
+                    if (clickedLineIdx !== null) {
+                        const idx = selectedLineIndices.indexOf(clickedLineIdx);
+                        if (idx !== -1) selectedLineIndices.splice(idx, 1);
+                        else selectedLineIndices.push(clickedLineIdx);
+                        CoreApp.redraw();
+                    }
+                }
+            },
+
+            onDraw: function(ctx, scale) {
+                const lines = CoreApp.getLines();
+                if (selectMode === 'line') {
+                    lines.forEach((l, idx) => {
+                        if (selectedLineIndices.includes(idx)) {
+                            ctx.beginPath();
+                            ctx.moveTo(l.x1, l.y1);
+                            ctx.lineTo(l.x2, l.y2);
+                            ctx.strokeStyle = '#38bdf8';
+                            ctx.lineWidth = 4 / scale;
+                            ctx.stroke();
+
+                            ctx.beginPath(); ctx.arc(l.x1, l.y1, 6 / scale, 0, Math.PI * 2); ctx.fillStyle = '#3b82f6'; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5 / scale; ctx.stroke();
+                            ctx.beginPath(); ctx.arc(l.x2, l.y2, 6 / scale, 0, Math.PI * 2); ctx.fillStyle = '#3b82f6'; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5 / scale; ctx.stroke();
+                        }
+                    });
+                }
+                if (selectMode === 'point') {
+                    lines.forEach(l => {
+                        [ {x: l.x1, y: l.y1}, {x: l.x2, y: l.y2} ].forEach(pt => {
+                            const isSelected = selectedPoints.some(p => p.x === pt.x && p.y === pt.y);
+                            ctx.beginPath(); ctx.arc(pt.x, pt.y, 6 / scale, 0, Math.PI * 2);
+                            ctx.fillStyle = isSelected ? '#3b82f6' : '#ef4444'; ctx.fill();
+                            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5 / scale; ctx.stroke();
+                        });
+                    });
+                }
+            },
+
+            connectTwoPoints: function() {
+                if (selectedPoints.length !== 2) return;
+                const p1 = selectedPoints[0], p2 = selectedPoints[1];
+                const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                const lines = CoreApp.getLines();
+                lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, length: Math.round(len), direction: 'CUSTOM' });
+                CoreApp.setLines(lines);
+                CoreApp.setCurrentPos(p2.x, p2.y);
+                ModuleSelect.clearSelection();
+            },
+
+            makeAngleFromTwoLines: function() {
+                if (selectedLineIndices.length !== 2) return;
+                const lines = CoreApp.getLines();
+                const l1 = lines[selectedLineIndices[0]], l2 = lines[selectedLineIndices[1]];
+                const denom = (l2.y2 - l2.y1) * (l1.x2 - l1.x1) - (l2.x2 - l2.x1) * (l1.y2 - l1.y1);
+                if (denom === 0) return;
+                const ua = ((l2.x2 - l2.x1) * (l1.y1 - l2.y1) - (l2.y2 - l2.y1) * (l1.x1 - l2.x1)) / denom;
+                const intersection = { x: l1.x1 + ua * (l1.x2 - l1.x1), y: l1.y1 + ua * (l1.y2 - l1.y1) };
+
+                if (Math.hypot(l1.x1 - intersection.x, l1.y1 - intersection.y) < Math.hypot(l1.x2 - intersection.x, l1.y2 - intersection.y)) {
+                    l1.x1 = intersection.x; l1.y1 = intersection.y;
+                } else {
+                    l1.x2 = intersection.x; l1.y2 = intersection.y;
+                }
+                l1.length = Math.round(Math.hypot(l1.x2 - l1.x1, l1.y2 - l1.y1));
+
+                if (Math.hypot(l2.x1 - intersection.x, l2.y1 - intersection.y) < Math.hypot(l2.x2 - intersection.x, l2.y2 - intersection.y)) {
+                    l2.x1 = intersection.x; l2.y1 = intersection.y;
+                } else {
+                    l2.x2 = intersection.x; l2.y2 = intersection.y;
+                }
+                l2.length = Math.round(Math.hypot(l2.x2 - l2.x1, l2.y2 - l2.y1));
+
+                CoreApp.setLines(lines);
+                ModuleSelect.clearSelection();
+            }
+        };
+        CoreApp.registerModule('SelectModule', window.ModuleSelect);
+    })();
+    </script>
+
+    <!-- 功能 6：列表選單與半圓按鈕 -->
+    <script>
+    (function() {
+        const app = document.getElementById('app');
+        if (!app) return;
+
+        const menuHTML = `
+            <div class="left-menu-container">
+                <div class="semi-circle-btn" onclick="ModuleMenu.toggleRotaryMenu()">▶</div>
+                <div class="rotary-menu" id="rotaryMenu">
+                    <button class="rotary-item" id="menuPointMode" onclick="ModuleMenu.setSelectMode('point')">點選模式</button>
+                    <button class="rotary-item" id="menuLineMode" onclick="ModuleMenu.setSelectMode('line')">線選模式</button>
+                    
+                    <button class="rotary-item" id="menuStartPoint" style="display:none;" onclick="ModuleMenu.startFromSelectedPoint()">新線起點</button>
+                    <button class="rotary-item" id="menuConnectPoints" style="display:none; color: #38bdf8;" onclick="ModuleMenu.connectTwoPoints()">🔗 兩點相連</button>
+                    <button class="rotary-item" id="menuDelete" style="display:none;" onclick="ModuleMenu.deleteSelected()">刪除項目</button>
+                    <button class="rotary-item" id="menuMakeAngle" style="display:none; color: #38bdf8;" onclick="ModuleMenu.makeAngleFromTwoLines()">📐 兩線成角</button>
+                    <button class="rotary-item" id="menuCancel" style="display:none;" onclick="ModuleMenu.clearSelection()">取消選取</button>
+
+                    <button class="rotary-item" id="menuProject" onclick="ModuleMenu.toggleSubMenu('projectSub')">專案管理 ▾</button>
+                    <div id="projectSub" style="display:none; display:flex; flex-direction:column; gap:6px;">
+                        <button class="rotary-item rotary-sub-item" onclick="CoreApp.newProject(); ModuleMenu.toggleRotaryMenu();">新建專案</button>
+                        <button class="rotary-item rotary-sub-item" onclick="CoreApp.saveProjectAs(); ModuleMenu.toggleRotaryMenu();">儲存專案</button>
+                        <button class="rotary-item rotary-sub-item" onclick="CoreApp.loadProjectPrompt(); ModuleMenu.toggleRotaryMenu();">載入專案</button>
+                        <button class="rotary-item rotary-sub-item" onclick="CoreApp.clearCanvas(); ModuleMenu.toggleRotaryMenu();">清空畫布</button>
+                        <button class="rotary-item rotary-sub-item" onclick="CoreApp.exportSVG(); ModuleMenu.toggleRotaryMenu();">匯出 SVG 向量檔</button>
+                    </div>
+
+                    <button class="rotary-item" id="menuUndo" onclick="CoreApp.undo(); ModuleMenu.toggleRotaryMenu();">復原</button>
+                </div>
+            </div>
+        `;
+        app.insertAdjacentHTML('afterbegin', menuHTML);
+
+        window.ModuleMenu = {
+            toggleRotaryMenu: function() {
+                const menu = document.getElementById('rotaryMenu');
+                if (menu) menu.classList.toggle('open');
+            },
+            toggleSubMenu: function(id) {
+                const sub = document.getElementById(id);
+                if (sub) sub.style.display = sub.style.display === 'none' ? 'flex' : 'none';
+            },
+            setSelectMode: function(mode) {
+                if (window.ModuleSelect) ModuleSelect.setSelectMode(mode);
+                this.toggleRotaryMenu();
+            },
+            clearSelection: function() {
+                if (window.ModuleSelect) ModuleSelect.clearSelection();
+            },
+            deleteSelected: function() {
+                if (window.CoreApp && typeof CoreApp.deleteSelected === 'function') {
+                    CoreApp.deleteSelected();
+                }
+                this.toggleRotaryMenu();
+            },
+            startFromSelectedPoint: function() {
+                if (window.CoreApp && typeof CoreApp.startFromSelectedPoint === 'function') {
+                    CoreApp.startFromSelectedPoint();
+                }
+                this.toggleRotaryMenu();
+            },
+            connectTwoPoints: function() {
+                if (window.ModuleSelect) window.ModuleSelect.connectTwoPoints();
+                this.toggleRotaryMenu();
+            },
+            makeAngleFromTwoLines: function() {
+                if (window.ModuleSelect) window.ModuleSelect.makeAngleFromTwoLines();
+                this.toggleRotaryMenu();
+            },
+
+            updateUI: function() {
+                const menuPointMode = document.getElementById('menuPointMode');
+                const menuLineMode = document.getElementById('menuLineMode');
+                const menuStartPoint = document.getElementById('menuStartPoint');
+                const menuConnectPoints = document.getElementById('menuConnectPoints');
+                const menuDelete = document.getElementById('menuDelete');
+                const menuMakeAngle = document.getElementById('menuMakeAngle');
+                const menuCancel = document.getElementById('menuCancel');
+                const menuProject = document.getElementById('menuProject');
+                const projectSub = document.getElementById('projectSub');
+                const menuUndo = document.getElementById('menuUndo');
+                if (!menuCancel) return;
+
+                const pts = window.ModuleSelect ? window.ModuleSelect.getSelectedPoints() : [];
+                const lines = window.ModuleSelect ? window.ModuleSelect.getSelectedLineIndices() : [];
+
+                if (pts.length > 0) {
+                    if (menuPointMode) menuPointMode.style.display = 'none';
+                    if (menuLineMode) menuLineMode.style.display = 'none';
+                    if (menuStartPoint) menuStartPoint.style.display = pts.length === 1 ? 'block' : 'none';
+                    if (menuConnectPoints) menuConnectPoints.style.display = pts.length === 2 ? 'block' : 'none';
+                    if (menuDelete) menuDelete.style.display = 'none';
+                    if (menuMakeAngle) menuMakeAngle.style.display = 'none';
+                    if (menuCancel) menuCancel.style.display = 'block';
+                    if (menuProject) menuProject.style.display = 'none';
+                    if (projectSub) projectSub.style.display = 'none';
+                    if (menuUndo) menuUndo.style.display = 'none';
+                } else if (lines.length > 0) {
+                    if (menuPointMode) menuPointMode.style.display = 'none';
+                    if (menuLineMode) menuLineMode.style.display = 'none';
+                    if (menuStartPoint) menuStartPoint.style.display = 'none';
+                    if (menuConnectPoints) menuConnectPoints.style.display = 'none';
+                    if (menuDelete) menuDelete.style.display = 'block';
+                    if (menuMakeAngle) menuMakeAngle.style.display = lines.length === 2 ? 'block' : 'none';
+                    if (menuCancel) menuCancel.style.display = 'block';
+                    if (menuProject) menuProject.style.display = 'none';
+                    if (projectSub) projectSub.style.display = 'none';
+                    if (menuUndo) menuUndo.style.display = 'none';
+                } else {
+                    if (menuPointMode) menuPointMode.style.display = 'block';
+                    if (menuLineMode) menuLineMode.style.display = 'block';
+                    if (menuStartPoint) menuStartPoint.style.display = 'none';
+                    if (menuConnectPoints) menuConnectPoints.style.display = 'none';
+                    if (menuDelete) menuDelete.style.display = 'none';
+                    if (menuMakeAngle) menuMakeAngle.style.display = 'none';
+                    if (menuCancel) menuCancel.style.display = 'none';
+                    if (menuProject) menuProject.style.display = 'block';
+                    if (projectSub) projectSub.style.display = 'none';
+                    if (menuUndo) menuUndo.style.display = 'block';
+                }
+            }
+        };
+
+        CoreApp.registerModule('MenuModule', window.ModuleMenu);
+    })();
+    </script>
+
+    <!-- 初始化觸發 -->
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.CoreApp && typeof CoreApp.init === 'function') {
+                CoreApp.init();
+            }
+        });
+    </script>
+</body>
+</html>
